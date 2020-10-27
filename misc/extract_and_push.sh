@@ -4,26 +4,56 @@ curl --fail --silent --location https://git.rip > /dev/null || exit 1
 
 [[ -z ${API_KEY} ]] && echo "API_KEY not defined, exiting!" && exit 1
 
-function sendTG() {
-    curl -s "https://api.telegram.org/bot${API_KEY}/sendmessage" --data "text=${*}&chat_id=-1001412293127&parse_mode=HTML" > /dev/null
+CHAT_ID="-1001412293127"
+
+# usage: normal - sendTg normal "message to send"
+#        reply  - sendTg reply message_id "reply to send"
+#        edit   - sendTg edit message_id "new message" ( new message must be different )
+sendTG() {
+    local mode="${1:?Error: Missing mode}" && shift
+    local api_url="https://api.telegram.org/bot${API_KEY:?}"
+    if [[ ${mode} =~ normal ]]; then
+        curl -s "${api_url}/sendmessage" --data "text=${*:?Error: Missing message text.}&chat_id=${CHAT_ID:?}&parse_mode=HTML"
+    elif [[ ${mode} =~ reply ]]; then
+        local message_id="${1:?Error: Missing message id for reply.}" && shift
+        curl -s "${api_url}/sendmessage" --data "text=${*:?Error: Missing message text.}&chat_id=${CHAT_ID:?}&parse_mode=HTML&reply_to_message_id=${message_id}"
+    elif [[ ${mode} =~ edit ]]; then
+        local message_id="${1:?Error: Missing message id for edit.}" && shift
+        curl -s "${api_url}/editMessageText" --data "text=${*:?Error: Missing message text.}&chat_id=${CHAT_ID:?}&parse_mode=HTML&message_id=${message_id}"
+    fi
 }
 
 [[ -z $ORG ]] && ORG="dumps"
 
 if [[ -f $URL ]]; then
     cp -v "$URL" .
-    sendTG "Found file locally"
+    MESSAGE="Found file locally"
+    if _json="$(sendTG normal "${MESSAGE}")"; then
+        # grab initial message id
+        MESSAGE_ID="$(jq ".result.message_id" <<< "${_json}")"
+    fi
 else
-    sendTG "Starting <a href=\"${URL}\">dump</a> on <a href=\"$BUILD_URL\">jenkins</a>"
+    MESSAGE="Starting <a href=\"${URL}\">dump</a> on <a href=\"$BUILD_URL\">jenkins</a>"
+    if _json="$(sendTG normal "${MESSAGE}")"; then
+        # grab initial message id
+        MESSAGE_ID="$(jq ".result.message_id" <<< "${_json}")"
+    fi
+
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Downloading the file .." > /dev/null
+    downloadError() {
+        echo "Download failed. Exiting."
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Failed to download the file." > /dev/null
+        exit 1
+    }
     if [[ $URL =~ drive.google.com ]]; then
         echo "Google Drive URL detected"
         FILE_ID="$(echo "${URL:?}" | sed -r 's/.*([0-9a-zA-Z_-]{33}).*/\1/')"
         echo "File ID is ${FILE_ID}"
         CONFIRM=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1\n/p')
-        aria2c --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$CONFIRM&id=$FILE_ID" || exit 1
+        aria2c --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$CONFIRM&id=$FILE_ID" || downloadError
         rm /tmp/cookies.txt
     elif [[ $URL =~ mega.nz ]]; then
-        megadl "'$URL'" || exit 1
+        megadl "'$URL'" || downloadError
     else
         # Try to download certain URLs with axel first
         if [[ $URL =~ ^.+(ota\.d\.miui\.com|otafsg|h2os|oxygenos\.oneplus\.net|dl.google|android.googleapis|ozip)(.+)?$ ]]; then
@@ -31,26 +61,19 @@ else
                 # Try to download with aria, else wget. Clean the directory each time.
                 aria2c -q -s16 -x16 "${URL}" || {
                     rm -fv ./*
-                    wget "${URL}" || {
-                        echo "Download failed. Exiting."
-                        sendTG "Failed to download the file."
-                        exit 1
-                    }
+                    wget "${URL}" || downloadError
                 }
             }
         else
             # Try to download with aria, else wget. Clean the directory each time.
             aria2c -q -s16 -x16 "${URL}" || {
                 rm -fv ./*
-                wget "${URL}" || {
-                    echo "Download failed. Exiting."
-                    sendTG "Failed to download the file."
-                    exit 1
-                }
+                wget "${URL}" || downloadError
             }
         fi
     fi
-    sendTG "Downloaded the file"
+    MESSAGE="${MESSAGE}"$'\n'"Downloaded the file"
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}" > /dev/null
 fi
 
 FILE=${URL##*/}
@@ -60,7 +83,7 @@ export UNZIP_DIR
 
 if [[ ! -f ${FILE} ]]; then
     if [[ "$(find . -type f | wc -l)" != 1 ]]; then
-        sendTG "Can't seem to find downloaded file!"
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Can't seem to find downloaded file!" > /dev/null
         exit 1
     else
         FILE="$(find . -type f)"
@@ -93,10 +116,10 @@ else
     git -C ~/vmlinux-to-elf pull
 fi
 
-bash ~/Firmware_extractor/extractor.sh "${FILE}" "${PWD}" || (
-    sendTG "Extraction failed!"
+bash ~/Firmware_extractor/extractor.sh "${FILE}" "${PWD}" || {
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Extraction failed!" > /dev/null
     exit 1
-)
+}
 
 rm -fv "$FILE"
 
@@ -117,7 +140,7 @@ done
 
 # Bail out right now if no system build.prop
 ls system/build*.prop 2> /dev/null || ls system/system/build*.prop 2> /dev/null || {
-    sendTG "No system build*.prop found, pushing cancelled!"
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"No system build*.prop found, pushing cancelled!" > /dev/null
     exit 1
 }
 
@@ -268,7 +291,7 @@ printf "\nflavor: %s\nrelease: %s\nid: %s\nincremental: %s\ntags: %s\nfingerprin
 # Check whether the subgroup exists or not
 if ! curl -s -H "Authorization: Bearer $DUMPER_TOKEN" "https://git.rip/api/v4/groups/$ORG%2f$repo_subgroup" -s --fail > x; then
     if ! curl -H "Authorization: Bearer $DUMPER_TOKEN" "https://git.rip/api/v4/groups" -X POST -F name="${repo_subgroup^}" -F parent_id=562 -F path="${repo_subgroup}" --silent --fail > x; then
-        sendTG "Creating subgroup for $repo_subgroup failed!"
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Creating subgroup for $repo_subgroup failed!" > /dev/null
         exit 1
     fi
 fi
@@ -276,7 +299,7 @@ group_id="$(jq -r '.id' x)"
 rm -f x
 
 [[ -z $group_id ]] && {
-    sendTG "Unable to get gitlab group id!"
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Unable to get gitlab group id!" > /dev/null
     exit 1
 }
 
@@ -290,14 +313,14 @@ if [[ $message == "404 Project Not Found" ]]; then
     project_id="$(jq .id x)"
     rm -f x
     if [[ -z $project_id ]]; then
-        sendTG "Could not get project id"
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Could not get project id" > /dev/null
         exit 1
     fi
 fi
 
 curl --silent -H "Authorization: bearer ${DUMPER_TOKEN}" "https://git.rip/api/v4/projects/$project_id/repository/branches/$branch" > x
 [[ "$(jq -r '.name' x)" == "$branch" ]] && {
-    sendTG "$branch already exists in <a href=\"https://git.rip/dumps/$repo\">$repo</a>!"
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"$branch already exists in <a href=\"https://git.rip/dumps/$repo\">$repo</a>!" > /dev/null
     rm -f x
     exit 1
 }
@@ -309,11 +332,11 @@ git config user.name 'dumper'
 git config user.email '457-dumper@users.noreply.git.rip'
 git checkout -b "$branch"
 find . -size +97M -printf '%P\n' -o -name '*sensetime*' -printf '%P\n' -o -iname '*Megvii*' -printf '%P\n' -o -name '*.lic' -printf '%P\n' -o -name '*zookhrs*' -printf '%P\n' > .gitignore
-sendTG "Committing and pushing"
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Committing and pushing" > /dev/null
 git add -A
 git commit --quiet --signoff --message="$description"
 git push "https://dumper:$DUMPER_TOKEN@git.rip/$ORG/$repo.git" HEAD:refs/heads/"$branch" || {
-    sendTG "Pushing failed!"
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Pushing failed!" > /dev/null
     echo "Pushing failed!"
     exit 1
 }
@@ -322,7 +345,7 @@ git push "https://dumper:$DUMPER_TOKEN@git.rip/$ORG/$repo.git" HEAD:refs/heads/"
 curl -s -H "Authorization: bearer ${DUMPER_TOKEN}" "https://git.rip/api/v4/projects/$project_id" -X PUT -F default_branch="$branch" > /dev/null
 
 # Send message to Telegram group
-sendTG "Pushed <a href=\"https://git.rip/$ORG/$repo\">$description</a>"
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Pushed <a href=\"https://git.rip/$ORG/$repo\">$description</a>" > /dev/null
 
 # Prepare message to be sent to Telegram channel
 commit_head=$(git rev-parse HEAD)
