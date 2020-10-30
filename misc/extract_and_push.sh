@@ -27,22 +27,22 @@ sendTG() {
 
 if [[ -f $URL ]]; then
     cp -v "$URL" .
-    MESSAGE="Found file locally"
+    MESSAGE="<code>Found file locally.</code>"
     if _json="$(sendTG normal "${MESSAGE}")"; then
         # grab initial message id
         MESSAGE_ID="$(jq ".result.message_id" <<< "${_json}")"
     fi
 else
-    MESSAGE="Starting <a href=\"${URL}\">dump</a> on <a href=\"$BUILD_URL\">jenkins</a>"
+    MESSAGE="<code>Started</code> <a href=\"${URL}\">dump</a> <code>on</code> <a href=\"$BUILD_URL\">jenkins</a>."
     if _json="$(sendTG normal "${MESSAGE}")"; then
         # grab initial message id
         MESSAGE_ID="$(jq ".result.message_id" <<< "${_json}")"
     fi
 
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Downloading the file .." > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Downloading the file..</code>" > /dev/null
     downloadError() {
         echo "Download failed. Exiting."
-        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Failed to download the file." > /dev/null
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Failed to download the file.</code>" > /dev/null
         exit 1
     }
     if [[ $URL =~ drive.google.com ]]; then
@@ -72,7 +72,7 @@ else
             }
         fi
     fi
-    MESSAGE="${MESSAGE}"$'\n'"Downloaded the file"
+    MESSAGE="${MESSAGE}"$'\n'"<code>Downloaded the file.</code>"
     sendTG edit "${MESSAGE_ID}" "${MESSAGE}" > /dev/null
 fi
 
@@ -83,7 +83,7 @@ export UNZIP_DIR
 
 if [[ ! -f ${FILE} ]]; then
     if [[ "$(find . -type f | wc -l)" != 1 ]]; then
-        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Can't seem to find downloaded file!" > /dev/null
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Can't seem to find downloaded file!</code>" > /dev/null
         exit 1
     else
         FILE="$(find . -type f)"
@@ -106,8 +106,9 @@ for tool_url in "${EXTERNAL_TOOLS[@]}"; do
     fi
 done
 
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Extracting file..</code>" > /dev/null
 bash "${HOME}"/Firmware_extractor/extractor.sh "${FILE}" "${PWD}" || {
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Extraction failed!" > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Extraction failed!</code>" > /dev/null
     exit 1
 }
 
@@ -122,6 +123,7 @@ PARTITIONS=(system systemex system_ext system_other
 # Extract the images
 for p in "${PARTITIONS[@]}"; do
     if [[ -f $p.img ]]; then
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Extracting partition: ${p} ..</code>" > /dev/null
         mkdir "$p" || rm -rf "${p:?}"/*
         7z x "$p".img -y -o"$p"/ || {
             sudo mount -o loop "$p".img "$p"
@@ -133,10 +135,12 @@ for p in "${PARTITIONS[@]}"; do
         rm -fv "$p".img
     fi
 done
+MESSAGE="${MESSAGE}"$'\n'"<code>All partitions extracted.</code>"
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"${MESSAGE}" > /dev/null
 
 # Bail out right now if no system build.prop
 ls system/build*.prop 2> /dev/null || ls system/system/build*.prop 2> /dev/null || {
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"No system build*.prop found, pushing cancelled!" > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>No system build*.prop found, pushing cancelled!</code>" > /dev/null
     exit 1
 }
 
@@ -208,6 +212,8 @@ sudo chmod -R u+rwX ./*
 find . -type f -printf '%P\n' | sort | grep -v ".git/" > ./all_files.txt
 
 # Prop extraction
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Extracting props..</code>" > /dev/null
+
 flavor=$(grep -oP "(?<=^ro.build.flavor=).*" -hs {system,system/system,vendor}/build.prop)
 [[ -z ${flavor} ]] && flavor=$(grep -oP "(?<=^ro.build.flavor=).*" -hs {system,system/system,vendor}/build*.prop)
 [[ -z ${flavor} ]] && flavor=$(grep -oP "(?<=^ro.vendor.build.flavor=).*" -hs vendor/build*.prop)
@@ -286,6 +292,8 @@ description=$(grep -oP "(?<=^ro.build.description=).*" -hs {system,system/system
 [[ -z ${description} ]] && description=$(grep -oP "(?<=^ro.system.build.description=).*" -hs {system,system/system}/build*.prop)
 [[ -z ${description} ]] && description="$flavor $release $id $incremental $tags"
 
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>All props extracted.</code>" > /dev/null
+
 branch="${description// /_}"
 repo_subgroup="${brand,,}"
 [[ -z $repo_subgroup ]] && repo_subgroup="${manufacturer,,}"
@@ -314,13 +322,13 @@ printf "\n%s\n\n" \
 # Check whether the subgroup exists or not
 if ! group_id_json="$(curl -s -H "Authorization: Bearer $DUMPER_TOKEN" "https://git.rip/api/v4/groups/$ORG%2f$repo_subgroup" -s --fail)"; then
     if ! group_id_json="$(curl -H "Authorization: Bearer $DUMPER_TOKEN" "https://git.rip/api/v4/groups" -X POST -F name="${repo_subgroup^}" -F parent_id=562 -F path="${repo_subgroup}" --silent --fail)"; then
-        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Creating subgroup for $repo_subgroup failed!" > /dev/null
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Creating subgroup for $repo_subgroup failed!</code>" > /dev/null
         exit 1
     fi
 fi
 
 if ! group_id="$(jq '.id' -e <<< "${group_id_json}")"; then
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Unable to get gitlab group id!" > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Unable to get gitlab group id!</code>" > /dev/null
     exit 1
 fi
 
@@ -329,14 +337,14 @@ project_id_json="$(curl --silent -H "Authorization: bearer ${DUMPER_TOKEN}" "htt
 if ! project_id="$(jq .id -e <<< "${project_id_json}")"; then
     project_id_json="$(curl --silent -H "Authorization: bearer ${DUMPER_TOKEN}" "https://git.rip/api/v4/projects" -X POST -F namespace_id="$group_id" -F name="$repo_name" -F visibility=public)"
     if project_id="$(jq .id -e <<< "${project_id_json}")"; then
-        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Could not get project id" > /dev/null
+        sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Could not get project id!</code>" > /dev/null
         exit 1
     fi
 fi
 
 branch_json="$(curl --silent -H "Authorization: bearer ${DUMPER_TOKEN}" "https://git.rip/api/v4/projects/$project_id/repository/branches/$branch")"
 [[ "$(jq '.name' -e <<< "${branch_json}")" == "$branch" ]] && {
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"$branch already exists in <a href=\"https://git.rip/dumps/$repo\">$repo</a>!" > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>$branch already exists in</code> <a href=\"https://git.rip/dumps/$repo\">$repo</a>!" > /dev/null
     exit 1
 }
 
@@ -346,11 +354,14 @@ git config user.name 'dumper'
 git config user.email '457-dumper@users.noreply.git.rip'
 git checkout -b "$branch"
 find . -size +97M -printf '%P\n' -o -name '*sensetime*' -printf '%P\n' -o -iname '*Megvii*' -printf '%P\n' -o -name '*.lic' -printf '%P\n' -o -name '*zookhrs*' -printf '%P\n' > .gitignore
-sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Committing and pushing" > /dev/null
+
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Committing..</code>" > /dev/null
 git add -A
 git commit --quiet --signoff --message="$description"
+
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Pushing..</code>" > /dev/null
 git push "https://dumper:$DUMPER_TOKEN@git.rip/$ORG/$repo.git" HEAD:refs/heads/"$branch" || {
-    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Pushing failed!" > /dev/null
+    sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Pushing failed!</code>" > /dev/null
     echo "Pushing failed!"
     exit 1
 }
@@ -359,7 +370,7 @@ git push "https://dumper:$DUMPER_TOKEN@git.rip/$ORG/$repo.git" HEAD:refs/heads/"
 curl -s -H "Authorization: bearer ${DUMPER_TOKEN}" "https://git.rip/api/v4/projects/$project_id" -X PUT -F default_branch="$branch" > /dev/null
 
 # Send message to Telegram group
-sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"Pushed <a href=\"https://git.rip/$ORG/$repo\">$description</a>" > /dev/null
+sendTG edit "${MESSAGE_ID}" "${MESSAGE}"$'\n'"<code>Pushed</code> <a href=\"https://git.rip/$ORG/$repo\">$description</a>" > /dev/null
 
 # Prepare message to be sent to Telegram channel
 commit_head=$(git rev-parse HEAD)
